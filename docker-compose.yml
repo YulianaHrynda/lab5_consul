@@ -1,0 +1,134 @@
+services:
+  # ─── Consul (service registry + KV config) ────────────────
+  consul:
+    image: hashicorp/consul:1.18
+    command: agent -dev -client=0.0.0.0 -ui
+    ports:
+      - "8500:8500"
+
+  consul-seed:
+    image: curlimages/curl:8.10.1
+    depends_on:
+      - consul
+    volumes:
+      - ./seed_consul_kv.sh:/seed_consul_kv.sh:ro
+    environment:
+      CONSUL_URL: "http://consul:8500"
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        echo "Waiting for Consul..."
+        until curl -sf http://consul:8500/v1/status/leader >/dev/null; do sleep 1; done
+        sh /seed_consul_kv.sh
+
+  # ─── Hazelcast cluster (3 nodes; map + queue) ─────────────
+  hazelcast-1:
+    image: hazelcast/hazelcast:5.3
+    volumes:
+      - ./hazelcast.xml:/opt/hazelcast/config/hazelcast.xml
+    environment:
+      JAVA_OPTS: "-Dhazelcast.config=/opt/hazelcast/config/hazelcast.xml"
+    ports:
+      - "5701:5701"
+
+  hazelcast-2:
+    image: hazelcast/hazelcast:5.3
+    volumes:
+      - ./hazelcast.xml:/opt/hazelcast/config/hazelcast.xml
+    environment:
+      JAVA_OPTS: "-Dhazelcast.config=/opt/hazelcast/config/hazelcast.xml"
+    ports:
+      - "5702:5701"
+
+  hazelcast-3:
+    image: hazelcast/hazelcast:5.3
+    volumes:
+      - ./hazelcast.xml:/opt/hazelcast/config/hazelcast.xml
+    environment:
+      JAVA_OPTS: "-Dhazelcast.config=/opt/hazelcast/config/hazelcast.xml"
+    ports:
+      - "5703:5701"
+
+  # ─── PostgreSQL ───────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: counter_db
+      POSTGRES_USER: counter_user
+      POSTGRES_PASSWORD: counter_pass
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  # ─── Logging service (3 instances) ────────────────────────
+  logging-service-1:
+    build: ./logging-service
+    hostname: logging-service-1
+    environment:
+      CONSUL_URL: "http://consul:8500"
+    depends_on:
+      - consul-seed
+      - hazelcast-1
+      - hazelcast-2
+      - hazelcast-3
+
+  logging-service-2:
+    build: ./logging-service
+    hostname: logging-service-2
+    environment:
+      CONSUL_URL: "http://consul:8500"
+    depends_on:
+      - consul-seed
+      - hazelcast-1
+      - hazelcast-2
+      - hazelcast-3
+
+  logging-service-3:
+    build: ./logging-service
+    hostname: logging-service-3
+    environment:
+      CONSUL_URL: "http://consul:8500"
+    depends_on:
+      - consul-seed
+      - hazelcast-1
+      - hazelcast-2
+      - hazelcast-3
+
+  # ─── Counter service ─────────────────────────────────────
+  counter-service:
+    build: ./counter-service
+    hostname: counter-service
+    environment:
+      CONSUL_URL: "http://consul:8500"
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: counter_db
+      DB_USER: counter_user
+      DB_PASSWORD: counter_pass
+    depends_on:
+      - consul-seed
+      - hazelcast-1
+      - hazelcast-2
+      - hazelcast-3
+      - postgres
+
+  # ─── Facade service ──────────────────────────────────────
+  facade-service:
+    build: ./facade-service
+    hostname: facade-service
+    environment:
+      CONSUL_URL: "http://consul:8500"
+    ports:
+      - "8082:8000"
+    depends_on:
+      - consul-seed
+      - hazelcast-1
+      - hazelcast-2
+      - hazelcast-3
+      - logging-service-1
+      - logging-service-2
+      - logging-service-3
+
+volumes:
+  pgdata:
